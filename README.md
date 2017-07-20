@@ -95,6 +95,8 @@ At this stage the Raspberry Pi will download images of dogs from Bing Image Sear
 
 ![kittens](images/kittens.png)
 
+* You can also upload an image.
+
 
 ### Returning images to your bot
 

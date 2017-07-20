@@ -210,16 +210,59 @@ class FileCaptureSource:
             raise Exception('image from %s failed to load' % (imageFile))
         return (1, frame, {'file': imageFile})
 
+class ImageDownloader:
+    def __init__(self, computerVisionApiKey, messageTemplate=None):
+        self.computerVisionApiKey = computerVisionApiKey
+        self.counter = 0
+        self.messageTemplate = messageTemplate
+
+    def download_image(self, imageUrl):
+        image = requests.get(imageUrl)
+        image.raise_for_status()
+        image2 = np.asarray(bytearray(image.content), dtype="uint8")
+        frame = cv2.imdecode(image2, cv2.IMREAD_COLOR)
+        frameInfo = {'url': imageUrl, 'template': self.messageTemplate}
+        self.counter += 1
+        if self.counter <= 10 and self.computerVisionApiKey:
+            url = 'https://westeurope.api.cognitive.microsoft.com/vision/v1.0/describe?maxCandidates=1'
+            payload = {'url': imageUrl}
+            headers = {
+                'Ocp-Apim-Subscription-Key': self.computerVisionApiKey,
+                'Content-Type': 'application/json'
+            }
+            r = requests.post(url, json=payload, headers=headers)
+            r.raise_for_status()
+            captions = r.json().get("description", {}).get("captions", [])
+            if (captions):
+                frameInfo['visionApiLabel'] = captions[0].get("text", "")
+                frameInfo['visionApiConfidence'] = captions[0].get("confidence", "")
+        return (1, frame, frameInfo)
+
+
+class RemoteImageSource:
+    def __init__(self, url, downloader):
+        self.url = url
+        self.downloader = downloader
+
+    def get_image(self):
+        if not self.url:
+            return (0, None, None)
+
+        print("downloading", self.url)
+        url = self.url
+        self.url = None
+        return self.downloader.download_image(url)
+
+
+
 class BingImageSource:
-    def __init__(self, searchTerm, bingKey, computerVisionApiKey, messageTemplate=None):
+    def __init__(self, searchTerm, bingKey, downloader):
         self.searchTerm = searchTerm
         self.bingKey = bingKey
-        self.computerVisionApiKey = computerVisionApiKey
         self.offset = 0
         self.queue = queue.Queue()
-        self.counter = 0
         self.maxResultsPerPage = 10
-        self.messageTemplate = messageTemplate
+        self.downloader = downloader
 
     def get_image(self):
         if (self.queue.empty()):
@@ -227,28 +270,10 @@ class BingImageSource:
 
         if (not self.queue.empty()):
             imageUrl = self.queue.get()
-            image = requests.get(imageUrl)
-            image2 = np.asarray(bytearray(image.content), dtype="uint8")
-            frame = cv2.imdecode(image2, cv2.IMREAD_COLOR)
-            frameInfo = {'url': imageUrl, 'template': self.messageTemplate}
-            self.counter += 1
-            if self.counter <= 10 and self.computerVisionApiKey:
-                url = 'https://westeurope.api.cognitive.microsoft.com/vision/v1.0/describe?maxCandidates=1'
-                payload = {'url': imageUrl}
-                headers = {
-                    'Ocp-Apim-Subscription-Key': self.computerVisionApiKey,
-                    'Content-Type': 'application/json'
-                }
-                r = requests.post(url, json=payload, headers=headers)
-                r.raise_for_status()
-                captions = r.json().get("description", {}).get("captions", [])
-                if (captions):
-                    frameInfo['visionApiLabel'] = captions[0].get("text", "")
-                    frameInfo['visionApiConfidence'] = captions[0].get("confidence", "")
-            return (1, frame, frameInfo)
+            return self.downloader.download_image(imageUrl)
 
         print("no more results")
-        return (0, None)
+        return (0, None, None)
 
     def fetch_images(self):
         url = 'https://api.cognitive.microsoft.com/bing/v5.0/images/search'
@@ -309,8 +334,8 @@ class AzureQueueStream:
         if storageKey:
             self.queue_service = QueueService(account_name='rpiimagedetectj34n5m', account_key=storageKey)
             self.queue_service.create_queue('rpi-queue')
-            self.queue_service.put_message('rpi-queue', base64.b64encode(b'{"Text":"grizzly"}').decode('ascii'))
-        self.bing_thread = FrameStream(BingImageSource(start_topic, self.bingKey, self.computerVisionApiKey)).start()
+        downloader = ImageDownloader(self.computerVisionApiKey)
+        self.source_thread = FrameStream(BingImageSource(start_topic, self.bingKey, downloader)).start()
 
     def start(self):
         t = threading.Thread(target=self.get_topic)
@@ -333,20 +358,23 @@ class AzureQueueStream:
                     self.queue_service.delete_message('rpi-queue', message.id, message.pop_receipt)        
 
             if lastMsg and lastMsg.content:
-                print("content",  lastMsg.content)
                 jsonMsg = json.loads(base64.b64decode(lastMsg.content).decode('ascii'))
                 searchTopic = jsonMsg.get("Text", "dog")
-                print("Bing Image Search topic:", searchTopic)
-                self.bing_thread.stop()
-                self.bing_thread = FrameStream(BingImageSource(searchTopic, self.bingKey, self.computerVisionApiKey, jsonMsg), queueSize = 16).start()
+                self.source_thread.stop()
+                downloader = ImageDownloader(self.computerVisionApiKey, jsonMsg)
+                if searchTopic.startswith("http"):
+                    self.source_thread = FrameStream(RemoteImageSource(searchTopic, downloader)).start()
+                else:
+                    print("Bing Image Search topic:", searchTopic)
+                    self.source_thread = FrameStream(BingImageSource(searchTopic, self.bingKey, downloader), queueSize = 16).start()
                 self.counter = 0
             time.sleep(2)
  
     def next_frame(self):
-        return self.bing_thread.next_frame()
+        return self.source_thread.next_frame()
 
     def stop(self):
-        self.bing_thread.stop()
+        self.source_thread.stop()
         self.stop_event.set()
 
     def send_to_azure(self, frameInfo, predictions):
