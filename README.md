@@ -95,8 +95,6 @@ At this stage the Raspberry Pi will download images of dogs from Bing Image Sear
 
 ![kittens](images/kittens.png)
 
-* You can also upload an image.
-
 
 ### Returning images to your bot
 
@@ -157,3 +155,9 @@ Now shortly after you type a search request in the Bot Test window, you should s
 ### Using Skype
 
 Skype is automatically registered as a channel for a newly created bot.  In your bot, go to Channels and locate the Skype channel to add it as a contact.
+
+### Enabling image upload
+
+* In your bot, replace the content of BasicProactiveEchoDialog.csx with the content of the file in this project's bot directory.
+* You can now upload your own images:
+![Duck image](images/duck.png)

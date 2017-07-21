@@ -115,8 +115,10 @@ class ModelHelper:
         self.captureThread = stream.start()
 
     def get_next_frame(self):
-        frameInfo = self.captureThread.next_frame()
-        return (frameInfo.get("frame"), frameInfo);
+        while True:
+            frameInfo = self.captureThread.next_frame()
+            if frameInfo:
+                return (frameInfo.get("frame"), frameInfo);
         
     def resize_image(self, image, newSize):
         # Shape: [rows, cols, channels]
@@ -318,6 +320,8 @@ class FrameStream:
                 self.frameQueue.put({'frame': frame, 'attrs': attrs})
 
     def next_frame(self):
+        if self.frameQueue.empty() and self.stop_event.is_set():
+            return None
         return self.frameQueue.get()
 
     def stop(self):
